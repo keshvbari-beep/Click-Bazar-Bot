@@ -1,13 +1,9 @@
 import os
 import json
-import logging
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    WebAppInfo,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -18,79 +14,92 @@ from telegram.ext import (
     filters,
 )
 
-# =========================================================
-# CLICK BAZAR BOT - CONFIG
-# =========================================================
+# =========================
+# SETTINGS
+# =========================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8692201266:AAFJo8CK6_oRn3bE0we10wtoaMDTWjhGDlI")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "PASTE_BOT_TOKEN_HERE")
 
-# अपने Telegram numeric ID से बदलें
+# IMPORTANT:
+# Yahan apne CURRENT working bot.py wala ADMIN_ID hi rakho.
 ADMIN_ID = 1881432851
 
-# USER MINI APP
 MINI_APP_URL = "https://keshvbari-beep.github.io/Click-bazar-/"
-
-# Local data file
 DATA_FILE = "deals.json"
 
-
-# =========================================================
-# LOGGING
-# =========================================================
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-
-logger = logging.getLogger(__name__)
+ADD_TITLE, ADD_PRICE, ADD_LINK = range(3)
 
 
-# =========================================================
-# DATABASE
-# =========================================================
+# =========================
+# RENDER HTTP SERVER
+# =========================
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Click Bazar Bot is running!")
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_web_server():
+    port = int(os.environ.get("PORT", 10000))
+
+    server = ThreadingHTTPServer(
+        ("0.0.0.0", port),
+        HealthHandler
+    )
+
+    print(f"HTTP server running on port {port}")
+    server.serve_forever()
+
+
+# =========================
+# DEAL STORAGE
+# =========================
 
 def load_deals():
     if not os.path.exists(DATA_FILE):
         return []
 
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as file:
-            return json.load(file)
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
         return []
 
 
 def save_deals(deals):
-    with open(DATA_FILE, "w", encoding="utf-8") as file:
-        json.dump(
-            deals,
-            file,
-            ensure_ascii=False,
-            indent=2
-        )
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(deals, f, ensure_ascii=False, indent=2)
 
 
-def get_next_id():
-    deals = load_deals()
-
+def get_next_id(deals):
     if not deals:
         return 1
 
-    return max(int(deal["id"]) for deal in deals) + 1
+    return max(int(d["id"]) for d in deals) + 1
 
 
-# =========================================================
+# =========================
 # ADMIN CHECK
-# =========================================================
+# =========================
 
-def is_admin(user_id):
-    return user_id == ADMIN_ID
+def is_admin(update: Update):
+    user = update.effective_user
+
+    if not user:
+        return False
+
+    return user.id == ADMIN_ID
 
 
-# =========================================================
-# /START
-# =========================================================
+# =========================
+# START
+# =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -98,7 +107,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton(
                 "🛍️ Open Click Bazar",
-                web_app=WebAppInfo(url=MINI_APP_URL)
+                url=MINI_APP_URL
             )
         ],
         [
@@ -109,184 +118,133 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
 
-    text = (
-        "🛍️ <b>Welcome to Click Bazar</b>\n\n"
-        "🔥 New & Best Deals देखने के लिए "
-        "नीचे दिए गए button पर क्लिक करें।\n\n"
+    message = (
+        "🛍️ *Welcome to Click Bazar*\n\n"
+        "🔥 New & Best Deals देखने के लिए नीचे दिए गए button पर क्लिक करें।\n\n"
         "✨ Best Deals • Smart Shopping • New Offers\n\n"
         "👇 अभी Click Bazar खोलें:"
     )
 
     await update.message.reply_text(
-        text,
-        parse_mode="HTML",
+        message,
+        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
-# =========================================================
-# /NEW
-# =========================================================
+# =========================
+# NEW DEALS
+# =========================
 
 async def new_deals(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     deals = load_deals()
 
     if not deals:
-
-        await update.message.reply_text(
-            "🔥 <b>NEW DEALS</b>\n\n"
-            "अभी कोई नई deal available नहीं है।\n\n"
-            "थोड़ी देर बाद फिर से /new check करें।",
-            parse_mode="HTML"
+        text = (
+            "🔥 *NEW DEALS*\n\n"
+            "अभी कोई नई deal उपलब्ध नहीं है।"
         )
+
+        if update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.message.reply_text(
+                text,
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                text,
+                parse_mode="Markdown"
+            )
 
         return
 
-    text = "🔥 <b>NEW DEALS</b>\n\n"
+    text = "🔥 *NEW DEALS*\n\n"
 
-    buttons = []
+    keyboard = []
 
     for deal in deals:
-
-        title = deal["title"]
-        price = deal["price"]
-        link = deal["link"]
-
         text += (
-            f"🛍️ <b>{title}</b>\n"
-            f"💰 Price: <b>₹{price}</b>\n\n"
+            f"🛍️ *{deal['title']}*\n"
+            f"💰 Price: ₹{deal['price']}\n\n"
+            "━━━━━━━━━━━━━━━━\n"
         )
 
-        buttons.append([
+        keyboard.append([
             InlineKeyboardButton(
-                f"🛒 View Deal • ₹{price}",
-                url=link
+                f"🛒 Buy Now — ₹{deal['price']}",
+                url=deal["link"]
             )
         ])
 
     text += (
-        "━━━━━━━━━━━━━━━━\n"
-        "🛍️ <b>Click Bazar</b>\n"
+        "🛍️ *Click Bazar*\n"
         "🔥 नई deals देखने के लिए /new"
     )
 
-    await update.message.reply_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    markup = InlineKeyboardMarkup(keyboard)
 
-
-# =========================================================
-# NEW DEAL BUTTON
-# =========================================================
-
-async def new_deals_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    deals = load_deals()
-
-    if not deals:
-
-        await query.message.reply_text(
-            "🔥 <b>NEW DEALS</b>\n\n"
-            "अभी कोई नई deal available नहीं है।",
-            parse_mode="HTML"
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.reply_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+    else:
+        await update.message.reply_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=markup
         )
 
-        return
 
-    text = "🔥 <b>NEW DEALS</b>\n\n"
-
-    buttons = []
-
-    for deal in deals:
-
-        title = deal["title"]
-        price = deal["price"]
-        link = deal["link"]
-
-        text += (
-            f"🛍️ <b>{title}</b>\n"
-            f"💰 Price: <b>₹{price}</b>\n\n"
-        )
-
-        buttons.append([
-            InlineKeyboardButton(
-                f"🛒 View Deal • ₹{price}",
-                url=link
-            )
-        ])
-
-    await query.message.reply_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-
-# =========================================================
-# ADMIN PANEL COMMAND
-# =========================================================
+# =========================
+# ADMIN PANEL
+# =========================
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if not is_admin(update.effective_user.id):
-
-        await update.message.reply_text(
-            "❌ <b>Access Denied</b>",
-            parse_mode="HTML"
-        )
-
+    if not is_admin(update):
+        await update.message.reply_text("❌ Access Denied")
         return
 
     text = (
-        "🔐 <b>CLICK BAZAR ADMIN</b>\n\n"
-
-        "➕ <b>/add</b>\n"
+        "🔐 *CLICK BAZAR ADMIN*\n\n"
+        "➕ /add\n"
         "नई deal जोड़ें\n\n"
-
-        "📋 <b>/list</b>\n"
+        "📋 /list\n"
         "सभी deals देखें\n\n"
-
-        "🗑️ <b>/delete ID</b>\n"
+        "🗑️ /delete ID\n"
         "Deal हटाएँ\n\n"
-
-        "❌ <b>/cancel</b>\n"
+        "❌ /cancel\n"
         "Current action cancel करें"
     )
 
     await update.message.reply_text(
         text,
-        parse_mode="HTML"
+        parse_mode="Markdown"
     )
 
 
-# =========================================================
+# =========================
 # ADD DEAL
-# =========================================================
-
-ADD_TITLE, ADD_PRICE, ADD_LINK = range(3)
-
+# =========================
 
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if not is_admin(update.effective_user.id):
-
-        await update.message.reply_text(
-            "❌ Access Denied."
-        )
-
+    if not is_admin(update):
+        await update.message.reply_text("❌ Access Denied")
         return ConversationHandler.END
 
+    context.user_data.clear()
+
     await update.message.reply_text(
-        "➕ <b>ADD NEW DEAL</b>\n\n"
-        "Step 1/3\n\n"
+        "➕ *ADD NEW DEAL*\n\n"
+        "Step 1/3\n"
         "📝 Product का नाम भेजें:",
-        parse_mode="HTML"
+        parse_mode="Markdown"
     )
 
     return ADD_TITLE
@@ -294,13 +252,16 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    if not is_admin(update):
+        return ConversationHandler.END
+
     context.user_data["title"] = update.message.text.strip()
 
     await update.message.reply_text(
-        "💰 <b>Step 2/3</b>\n\n"
+        "💰 *Step 2/3*\n\n"
         "Product की price भेजें।\n\n"
-        "Example: <code>499</code>",
-        parse_mode="HTML"
+        "Example: 499",
+        parse_mode="Markdown"
     )
 
     return ADD_PRICE
@@ -308,33 +269,24 @@ async def add_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    if not is_admin(update):
+        return ConversationHandler.END
+
     price = update.message.text.strip()
 
-    price = (
-        price
-        .replace("₹", "")
-        .replace(",", "")
-        .strip()
-    )
-
-    try:
-        float(price)
-    except ValueError:
-
+    if not price.replace(".", "", 1).isdigit():
         await update.message.reply_text(
             "❌ सही price भेजें।\n\n"
-            "Example: <code>499</code>",
-            parse_mode="HTML"
+            "Example: 499"
         )
-
         return ADD_PRICE
 
     context.user_data["price"] = price
 
     await update.message.reply_text(
-        "🔗 <b>Step 3/3</b>\n\n"
+        "🔗 *Step 3/3*\n\n"
         "अब product/deal link भेजें:",
-        parse_mode="HTML"
+        parse_mode="Markdown"
     )
 
     return ADD_LINK
@@ -342,44 +294,41 @@ async def add_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    if not is_admin(update):
+        return ConversationHandler.END
+
     link = update.message.text.strip()
 
     if not (
-        link.startswith("https://")
-        or link.startswith("http://")
+        link.startswith("http://")
+        or link.startswith("https://")
     ):
-
         await update.message.reply_text(
-            "❌ Valid link भेजें।\n\n"
-            "Link <code>https://</code> से शुरू होना चाहिए।",
-            parse_mode="HTML"
+            "❌ कृपया पूरा valid link भेजें।\n\n"
+            "Example:\n"
+            "https://www.amazon.in/..."
         )
-
         return ADD_LINK
-
-    title = context.user_data["title"]
-    price = context.user_data["price"]
 
     deals = load_deals()
 
     new_deal = {
-        "id": get_next_id(),
-        "title": title,
-        "price": price,
+        "id": get_next_id(deals),
+        "title": context.user_data["title"],
+        "price": context.user_data["price"],
         "link": link
     }
 
     deals.append(new_deal)
-
     save_deals(deals)
 
     await update.message.reply_text(
-        "✅ <b>DEAL ADDED!</b>\n\n"
-        f"🆔 ID: <code>{new_deal['id']}</code>\n"
-        f"🛍️ {title}\n"
-        f"💰 ₹{price}\n\n"
-        "अब यह deal /new में दिखाई देगी।",
-        parse_mode="HTML"
+        "✅ *DEAL ADDED SUCCESSFULLY!*\n\n"
+        f"🆔 ID: {new_deal['id']}\n"
+        f"🛍️ {new_deal['title']}\n"
+        f"💰 ₹{new_deal['price']}\n\n"
+        "🔥 अब यह /new में दिखाई देगी।",
+        parse_mode="Markdown"
     )
 
     context.user_data.clear()
@@ -387,51 +336,46 @@ async def add_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# =========================================================
-# CANCEL
-# =========================================================
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not is_admin(update):
+        await update.message.reply_text("❌ Access Denied")
+        return ConversationHandler.END
 
     context.user_data.clear()
 
     await update.message.reply_text(
-        "❌ Action cancelled."
+        "❌ Current action cancelled."
     )
 
     return ConversationHandler.END
 
 
-# =========================================================
-# ADMIN LIST
-# =========================================================
+# =========================
+# LIST
+# =========================
 
 async def list_deals(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if not is_admin(update.effective_user.id):
-
-        await update.message.reply_text(
-            "❌ Access Denied."
-        )
-
+    if not is_admin(update):
+        await update.message.reply_text("❌ Access Denied")
         return
 
     deals = load_deals()
 
     if not deals:
-
         await update.message.reply_text(
-            "📋 अभी कोई deal नहीं है।"
+            "📋 *ALL DEALS*\n\n"
+            "अभी कोई deal नहीं है।",
+            parse_mode="Markdown"
         )
-
         return
 
-    text = "📋 <b>ALL DEALS</b>\n\n"
+    text = "📋 *ALL DEALS*\n\n"
 
     for deal in deals:
-
         text += (
-            f"🆔 <code>{deal['id']}</code>\n"
+            f"🆔 *{deal['id']}*\n"
             f"🛍️ {deal['title']}\n"
             f"💰 ₹{deal['price']}\n"
             f"🔗 {deal['link']}\n"
@@ -440,127 +384,129 @@ async def list_deals(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         text,
-        parse_mode="HTML"
+        parse_mode="Markdown"
     )
 
 
-# =========================================================
-# DELETE DEAL
-# =========================================================
+# =========================
+# DELETE
+# =========================
 
 async def delete_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if not is_admin(update.effective_user.id):
-
-        await update.message.reply_text(
-            "❌ Access Denied."
-        )
-
+    if not is_admin(update):
+        await update.message.reply_text("❌ Access Denied")
         return
 
     if not context.args:
-
         await update.message.reply_text(
-            "❌ Deal ID दें।\n\n"
-            "Example:\n"
-            "<code>/delete 3</code>",
-            parse_mode="HTML"
+            "Example:\n/delete 1"
         )
-
         return
 
     try:
         deal_id = int(context.args[0])
-
     except ValueError:
-
         await update.message.reply_text(
-            "❌ Invalid Deal ID."
+            "❌ सही ID दें।\n\n"
+            "Example: /delete 1"
         )
-
         return
 
     deals = load_deals()
 
-    updated = [
-        deal
-        for deal in deals
-        if int(deal["id"]) != deal_id
+    new_deals = [
+        d for d in deals
+        if int(d["id"]) != deal_id
     ]
 
-    if len(updated) == len(deals):
-
+    if len(new_deals) == len(deals):
         await update.message.reply_text(
             f"❌ Deal ID {deal_id} नहीं मिली।"
         )
-
         return
 
-    save_deals(updated)
+    save_deals(new_deals)
 
     await update.message.reply_text(
-        f"✅ Deal ID {deal_id} delete हो गई।"
+        f"✅ Deal ID {deal_id} deleted successfully."
     )
 
 
-# =========================================================
-# RANDOM USER MESSAGE
-# =========================================================
+# =========================
+# INVALID MESSAGE
+# =========================
 
-async def random_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def invalid_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    # Admin को random message पर block message नहीं चाहिए
-    if is_admin(update.effective_user.id):
+    if is_admin(update):
         return
 
     await update.message.reply_text(
-        "❌ <b>Invalid Message</b>\n\n"
+        "❌ *Invalid Message*\n\n"
         "कृपया available commands का इस्तेमाल करें।\n\n"
         "🔥 New Deals → /new\n"
         "🛍️ Click Bazar → /start",
-        parse_mode="HTML"
+        parse_mode="Markdown"
     )
 
 
-# =========================================================
+# =========================
+# CALLBACK
+# =========================
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+
+    if query.data == "new_deals":
+        await new_deals(update, context)
+
+
+# =========================
 # MAIN
-# =========================================================
+# =========================
 
 def main():
 
-    if BOT_TOKEN == "PASTE_BOT_TOKEN_HERE":
+    # Render ke liye HTTP server
+    web_thread = threading.Thread(
+        target=start_web_server,
+        daemon=True
+    )
 
-        print("❌ BOT_TOKEN सेट करें।")
-        return
+    web_thread.start()
+
+    print("🛍️ CLICK BAZAR BOT")
+    print("✅ Bot is running...")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # -----------------------------
-    # ADD DEAL CONVERSATION
-    # -----------------------------
+    # Commands
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("new", new_deals))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CommandHandler("list", list_deals))
+    app.add_handler(CommandHandler("delete", delete_deal))
 
-    add_conversation = ConversationHandler(
-
+    # Add conversation
+    conversation = ConversationHandler(
         entry_points=[
             CommandHandler("add", add_start)
         ],
-
         states={
-
             ADD_TITLE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     add_title
                 )
             ],
-
             ADD_PRICE: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     add_price
                 )
             ],
-
             ADD_LINK: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
@@ -568,75 +514,33 @@ def main():
                 )
             ],
         },
-
         fallbacks=[
             CommandHandler("cancel", cancel)
-        ]
+        ],
     )
 
-    # -----------------------------
-    # COMMANDS
-    # -----------------------------
+    app.add_handler(conversation)
 
     app.add_handler(
-        CommandHandler("start", start)
+        CommandHandler("cancel", cancel)
     )
 
     app.add_handler(
-        CommandHandler("new", new_deals)
+        CallbackQueryHandler(button_handler)
     )
-
-    app.add_handler(
-        CommandHandler("admin", admin)
-    )
-
-    app.add_handler(
-        CommandHandler("list", list_deals)
-    )
-
-    app.add_handler(
-        CommandHandler("delete", delete_deal)
-    )
-
-    # -----------------------------
-    # ADD DEAL
-    # -----------------------------
-
-    app.add_handler(add_conversation)
-
-    # -----------------------------
-    # BUTTONS
-    # -----------------------------
-
-    app.add_handler(
-        CallbackQueryHandler(
-            new_deals_button,
-            pattern="^new_deals$"
-        )
-    )
-
-    # -----------------------------
-    # RANDOM MESSAGES
-    # -----------------------------
 
     app.add_handler(
         MessageHandler(
-            filters.ALL & ~filters.COMMAND,
-            random_message
+            filters.TEXT & ~filters.COMMAND,
+            invalid_message
         )
     )
 
-    print("-----------------------------------")
-    print("🛍️ CLICK BAZAR BOT")
-    print("✅ Bot is running...")
-    print("-----------------------------------")
-
+    # Telegram polling
     app.run_polling(
         drop_pending_updates=True
     )
 
-
-# =========================================================
 
 if __name__ == "__main__":
     main()
